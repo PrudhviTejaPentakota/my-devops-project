@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myflaskapp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myflaskapp
+  template:
+    metadata:
+      labels:
+        app: myflaskapp
+    spec:
+      containers:
+      - name: myflaskapp
+        image: <your-dockerhub-username>/myflaskapp:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 5000
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /

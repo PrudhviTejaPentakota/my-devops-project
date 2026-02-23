@@ -1,0 +1,105 @@
+pipeline {
+  agent any
+
+  environment {
+    // 🔧 EDIT THIS: set your Docker Hub username
+    DOCKERHUB_USER = 'PrudhviTejaPentakota'
+
+    APP_NAME    = 'myflaskapp'
+    IMAGE_NAME  = "${DOCKERHUB_USER}/${APP_NAME}"
+    NAMESPACE   = 'demo'
+
+    // Jenkins will copy kubeconfig prepared on the agent/host
+    KUBECONFIG  = "${WORKSPACE}/.kube/config"
+  }
+
+  options {
+    skipDefaultCheckout(true)
+    timestamps()
+  }
+
+  stages {
+
+    stage('Checkout') {
+      steps {
+        // If your repo URL changes, update here
+        git url: 'https://github.com/PrudhviTejaPentakota/my-devops-project.git', branch: 'main'
+      }
+    }
+
+    stage('Prepare Tools') {
+      steps {
+        sh '''
+          mkdir -p $WORKSPACE/.kube
+          # Try copying kubeconfig from common locations (set up later on the EC2)
+          if [ -f /home/jenkins/.kube/config ]; then
+            cp /home/jenkins/.kube/config $KUBECONFIG
+          elif [ -f $HOME/.kube/config ]; then
+            cp $HOME/.kube/config $KUBECONFIG
+          fi
+          echo "Using KUBECONFIG at: $KUBECONFIG"
+        '''
+      }
+    }
+
+    stage('Build Docker Image') {
+      steps {
+        sh '''
+          cd app
+          docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} -t ${IMAGE_NAME}:latest .
+        '''
+      }
+    }
+
+    stage('Push Image to Docker Hub') {
+      steps {
+        withCredentials([
+          string(credentialsId: 'dockerhub-username', variable: 'DH_USER'),
+          string(credentialsId: 'dockerhub-password', variable: 'DH_PASS')
+        ]) {
+          sh '''
+            echo "${DH_PASS}" | docker login -u "${DH_USER}" --password-stdin
+            docker push ${IMAGE_NAME}:${BUILD_NUMBER}
+            docker push ${IMAGE_NAME}:latest
+            docker logout || true
+          '''
+        }
+      }
+    }
+
+    stage('Deploy to Kubernetes') {
+      steps {
+        sh '''
+          export KUBECONFIG=${KUBECONFIG}
+          # Create namespace and apply kustomize
+          kubectl apply -f k8s/namespace.yaml
+          # Patch deployment image tag dynamically for this build
+          # First apply base manifests
+          kubectl apply -k k8s/
+
+          # Ensure deployment exists, then update image to current BUILD_NUMBER
+          kubectl -n ${NAMESPACE} set image deployment/${APP_NAME} ${APP_NAME}=${IMAGE_NAME}:${BUILD_NUMBER} --record || true
+
+          # Wait for rollout
+          kubectl -n ${NAMESPACE} rollout status deployment/${APP_NAME} --timeout=120s
+        '''
+      }
+    }
+
+    stage('Smoke Test') {
+      steps {
+        sh '''
+          export KUBECONFIG=${KUBECONFIG}
+          kubectl -n ${NAMESPACE} get pods
+          kubectl -n ${NAMESPACE} get svc myflaskapp
+        '''
+      }
+    }
+  }
+
+  post {
+    always {
+      archiveArtifacts artifacts: 'k8s/*.yaml', allowEmptyArchive: true
+    }
+  }
+}
